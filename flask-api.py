@@ -1,217 +1,314 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, session
 import google.generativeai as genai
 import os
 from PIL import Image
 import io
+import uuid
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-here-change-in-production')
 
 # Configure Gemini API
 GEMINI_API_KEY = "AIzaSyAbUKgJFbQHKM1O_4x7jm_kWy-b_a3wrNw"
+
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Initialize models
-text_model = genai.GenerativeModel('gemini-2.5-flash')
-vision_model = genai.GenerativeModel('gemini-2.5-flash-lite')
+# Store conversation sessions (in production, use a database)
+conversations = {}
 
 # HTML Template
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Gemini API Chat with Vision</title>
+    <title>Gemini Chat with History</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 900px;
-            margin: 50px auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }
-        .container {
-            background-color: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-            color: #333;
-            text-align: center;
-            margin-bottom: 10px;
-        }
-        .subtitle {
-            text-align: center;
-            color: #666;
-            margin-bottom: 30px;
-        }
-        .input-section {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #555;
-        }
-        textarea {
-            width: 100%;
-            padding: 15px;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-            font-size: 16px;
-            resize: vertical;
+        * {
+            margin: 0;
+            padding: 0;
             box-sizing: border-box;
-            transition: border-color 0.3s;
         }
-        textarea:focus {
-            outline: none;
-            border-color: #4285f4;
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
         }
-        .file-input-wrapper {
-            position: relative;
-            display: inline-block;
+        .chat-container {
             width: 100%;
+            max-width: 1000px;
+            height: 90vh;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .chat-header h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .clear-btn {
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .clear-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f5f7fa;
+        }
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 12px;
+            animation: fadeIn 0.3s;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .message.user {
+            flex-direction: row-reverse;
+        }
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+        .message.user .message-avatar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .message.assistant .message-avatar {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .message-image {
+            max-width: 300px;
+            border-radius: 8px;
+            margin-top: 8px;
+            cursor: pointer;
+        }
+        .chat-input-area {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+        }
+        .image-preview-container {
+            display: none;
+            margin-bottom: 15px;
+            position: relative;
+        }
+        .image-preview-container img {
+            max-width: 150px;
+            max-height: 150px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .remove-preview {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: #f44336;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .input-wrapper {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+        .file-input-label {
+            background: #f5f7fa;
+            border: 2px solid #e0e0e0;
+            padding: 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .file-input-label:hover {
+            background: #e3f2fd;
+            border-color: #4285f4;
         }
         input[type="file"] {
             display: none;
         }
-        .file-input-label {
-            display: block;
-            padding: 15px;
-            background-color: #f8f9fa;
-            border: 2px dashed #ddd;
-            border-radius: 5px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        .file-input-label:hover {
-            background-color: #e9ecef;
-            border-color: #4285f4;
-        }
-        .file-input-label.has-file {
-            background-color: #e3f2fd;
-            border-color: #4285f4;
-            border-style: solid;
-        }
-        .image-preview {
-            margin-top: 15px;
-            text-align: center;
-            display: none;
-        }
-        .image-preview img {
-            max-width: 100%;
-            max-height: 300px;
+        textarea {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
             border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }
-        .remove-image {
-            display: inline-block;
-            margin-top: 10px;
-            padding: 8px 16px;
-            background-color: #f44336;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        .remove-image:hover {
-            background-color: #d32f2f;
-        }
-        button.send-btn {
-            background-color: #4285f4;
-            color: white;
-            padding: 15px 30px;
-            border: none;
-            border-radius: 5px;
             font-size: 16px;
+            resize: none;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .send-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
             cursor: pointer;
-            width: 100%;
-            transition: background-color 0.3s;
+            font-size: 16px;
+            font-weight: 600;
+            transition: transform 0.2s;
         }
-        button.send-btn:hover {
-            background-color: #357ae8;
+        .send-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
         }
-        button.send-btn:disabled {
-            background-color: #ccc;
+        .send-btn:disabled {
+            opacity: 0.5;
             cursor: not-allowed;
         }
-        #response {
-            margin-top: 30px;
-            padding: 20px;
-            background-color: #f9f9f9;
-            border-left: 4px solid #4285f4;
-            border-radius: 5px;
-            white-space: pre-wrap;
+        .loading-indicator {
             display: none;
-            line-height: 1.6;
-        }
-        .loading {
             text-align: center;
+            padding: 10px;
             color: #666;
-            margin: 20px 0;
-            display: none;
         }
-        .loading::after {
-            content: '...';
-            animation: dots 1.5s steps(4, end) infinite;
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+            padding: 12px 16px;
         }
-        @keyframes dots {
-            0%, 20% { content: '.'; }
-            40% { content: '..'; }
-            60%, 100% { content: '...'; }
+        .typing-indicator span {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #999;
+            animation: typing 1.4s infinite;
         }
-        .info-box {
-            background-color: #e3f2fd;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            border-left: 4px solid #2196f3;
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-10px); }
         }
-        .info-box p {
-            margin: 5px 0;
-            color: #1976d2;
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+        .empty-state h2 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        .empty-state p {
+            font-size: 16px;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🤖 Gemini API Chat</h1>
-        <p class="subtitle">Ask questions with or without images</p>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h1>🤖 Gemini Chat</h1>
+            <button class="clear-btn" onclick="clearConversation()">🗑️ Clear Chat</button>
+        </div>
         
-        <div class="info-box">
-            <p>💡 <strong>Tip:</strong> Upload an image to ask questions about it, or just type a text prompt!</p>
-            <p>📷 Supported formats: JPG, PNG, GIF, WebP</p>
-        </div>
-
-        <div class="input-section">
-            <label for="imageInput">Upload Image (Optional)</label>
-            <div class="file-input-wrapper">
-                <input type="file" id="imageInput" accept="image/*" onchange="handleFileSelect(event)">
-                <label for="imageInput" class="file-input-label" id="fileLabel">
-                    📁 Click to select an image or drag and drop
-                </label>
+        <div class="chat-messages" id="chatMessages">
+            <div class="empty-state">
+                <h2>👋 Welcome to Gemini Chat!</h2>
+                <p>Start a conversation by typing a message below</p>
+                <p style="margin-top: 10px; font-size: 14px;">💡 You can also upload images to ask questions about them</p>
             </div>
-            <div class="image-preview" id="imagePreview">
+        </div>
+        
+        <div class="chat-input-area">
+            <div class="image-preview-container" id="imagePreviewContainer">
                 <img id="previewImg" src="" alt="Preview">
-                <br>
-                <button class="remove-image" onclick="removeImage()">Remove Image</button>
+                <button class="remove-preview" onclick="removeImage()">×</button>
+            </div>
+            
+            <div class="input-wrapper">
+                <label for="imageInput" class="file-input-label" title="Upload image">
+                    📷
+                </label>
+                <input type="file" id="imageInput" accept="image/*" onchange="handleFileSelect(event)">
+                
+                <textarea 
+                    id="messageInput" 
+                    rows="1" 
+                    placeholder="Type your message here..."
+                    onkeydown="handleKeyPress(event)"
+                ></textarea>
+                
+                <button class="send-btn" onclick="sendMessage()" id="sendBtn">Send</button>
             </div>
         </div>
-
-        <div class="input-section">
-            <label for="prompt">Your Message</label>
-            <textarea id="prompt" rows="6" placeholder="Enter your prompt here... (e.g., 'What's in this image?' or any question)"></textarea>
-        </div>
-
-        <button class="send-btn" onclick="sendPrompt()">Send</button>
-        <div class="loading" id="loading">Processing</div>
-        <div id="response"></div>
     </div>
 
     <script>
         let selectedFile = null;
+        let sessionId = null;
+
+        // Initialize session
+        async function initSession() {
+            try {
+                const response = await fetch('/init-session', { method: 'POST' });
+                const data = await response.json();
+                sessionId = data.session_id;
+            } catch (error) {
+                console.error('Error initializing session:', error);
+            }
+        }
+
+        initSession();
 
         function handleFileSelect(event) {
             const file = event.target.files[0];
@@ -220,9 +317,7 @@ HTML_TEMPLATE = '''
                 const reader = new FileReader();
                 reader.onload = function(e) {
                     document.getElementById('previewImg').src = e.target.result;
-                    document.getElementById('imagePreview').style.display = 'block';
-                    document.getElementById('fileLabel').classList.add('has-file');
-                    document.getElementById('fileLabel').innerHTML = '✓ Image selected: ' + file.name;
+                    document.getElementById('imagePreviewContainer').style.display = 'block';
                 };
                 reader.readAsDataURL(file);
             }
@@ -231,89 +326,164 @@ HTML_TEMPLATE = '''
         function removeImage() {
             selectedFile = null;
             document.getElementById('imageInput').value = '';
-            document.getElementById('imagePreview').style.display = 'none';
-            document.getElementById('fileLabel').classList.remove('has-file');
-            document.getElementById('fileLabel').innerHTML = '📁 Click to select an image or drag and drop';
+            document.getElementById('imagePreviewContainer').style.display = 'none';
         }
 
-        async function sendPrompt() {
-            const prompt = document.getElementById('prompt').value;
-            const responseDiv = document.getElementById('response');
-            const loading = document.getElementById('loading');
-            const button = document.querySelector('.send-btn');
+        function handleKeyPress(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
 
-            if (!prompt.trim()) {
-                alert('Please enter a prompt');
+        function addMessage(role, content, imageUrl = null) {
+            const messagesDiv = document.getElementById('chatMessages');
+            
+            // Remove empty state if exists
+            const emptyState = messagesDiv.querySelector('.empty-state');
+            if (emptyState) {
+                emptyState.remove();
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            
+            const avatar = role === 'user' ? '👤' : '🤖';
+            
+            let imageHtml = '';
+            if (imageUrl) {
+                imageHtml = `<img src="${imageUrl}" class="message-image" alt="Uploaded image">`;
+            }
+            
+            messageDiv.innerHTML = `
+                <div class="message-avatar">${avatar}</div>
+                <div>
+                    ${imageHtml}
+                    <div class="message-content">${content}</div>
+                </div>
+            `;
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function showTypingIndicator() {
+            const messagesDiv = document.getElementById('chatMessages');
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'message assistant';
+            typingDiv.id = 'typingIndicator';
+            typingDiv.innerHTML = `
+                <div class="message-avatar">🤖</div>
+                <div class="message-content">
+                    <div class="typing-indicator">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                </div>
+            `;
+            messagesDiv.appendChild(typingDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function removeTypingIndicator() {
+            const indicator = document.getElementById('typingIndicator');
+            if (indicator) {
+                indicator.remove();
+            }
+        }
+
+        async function sendMessage() {
+            const messageInput = document.getElementById('messageInput');
+            const message = messageInput.value.trim();
+            const sendBtn = document.getElementById('sendBtn');
+
+            if (!message) {
+                alert('Please enter a message');
                 return;
             }
 
-            button.disabled = true;
-            loading.style.display = 'block';
-            responseDiv.style.display = 'none';
+            sendBtn.disabled = true;
+
+            // Create image URL if image is selected
+            let imageUrl = null;
+            if (selectedFile) {
+                imageUrl = URL.createObjectURL(selectedFile);
+            }
+
+            // Add user message
+            addMessage('user', message, imageUrl);
+            messageInput.value = '';
+
+            // Show typing indicator
+            showTypingIndicator();
 
             try {
                 const formData = new FormData();
-                formData.append('prompt', prompt);
+                formData.append('message', message);
+                formData.append('session_id', sessionId);
                 
                 if (selectedFile) {
                     formData.append('image', selectedFile);
                 }
 
-                const response = await fetch('/generate', {
+                const response = await fetch('/chat', {
                     method: 'POST',
                     body: formData
                 });
 
                 const data = await response.json();
 
+                removeTypingIndicator();
+
                 if (data.error) {
-                    responseDiv.textContent = 'Error: ' + data.error;
-                    responseDiv.style.borderLeftColor = '#f44336';
+                    addMessage('assistant', 'Error: ' + data.error);
                 } else {
-                    responseDiv.textContent = data.response;
-                    responseDiv.style.borderLeftColor = '#4285f4';
+                    addMessage('assistant', data.response);
                 }
 
-                responseDiv.style.display = 'block';
+                // Clear image after sending
+                removeImage();
             } catch (error) {
-                responseDiv.textContent = 'Error: ' + error.message;
-                responseDiv.style.borderLeftColor = '#f44336';
-                responseDiv.style.display = 'block';
+                removeTypingIndicator();
+                addMessage('assistant', 'Error: ' + error.message);
             } finally {
-                loading.style.display = 'none';
-                button.disabled = false;
+                sendBtn.disabled = false;
+                messageInput.focus();
             }
         }
 
-        // Allow Enter + Shift to send
-        document.getElementById('prompt').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && e.shiftKey) {
-                e.preventDefault();
-                sendPrompt();
-            }
-        });
+        async function clearConversation() {
+            if (confirm('Are you sure you want to clear the conversation?')) {
+                try {
+                    await fetch('/clear-session', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ session_id: sessionId })
+                    });
 
-        // Drag and drop functionality
-        const fileLabel = document.getElementById('fileLabel');
-        
-        fileLabel.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            fileLabel.style.backgroundColor = '#e3f2fd';
-        });
-        
-        fileLabel.addEventListener('dragleave', () => {
-            fileLabel.style.backgroundColor = '#f8f9fa';
-        });
-        
-        fileLabel.addEventListener('drop', (e) => {
-            e.preventDefault();
-            fileLabel.style.backgroundColor = '#f8f9fa';
-            
-            const files = e.dataTransfer.files;
-            if (files.length > 0 && files[0].type.startsWith('image/')) {
-                document.getElementById('imageInput').files = files;
-                handleFileSelect({ target: { files: files } });
+                    const messagesDiv = document.getElementById('chatMessages');
+                    messagesDiv.innerHTML = `
+                        <div class="empty-state">
+                            <h2>👋 Welcome to Gemini Chat!</h2>
+                            <p>Start a conversation by typing a message below</p>
+                            <p style="margin-top: 10px; font-size: 14px;">💡 You can also upload images to ask questions about them</p>
+                        </div>
+                    `;
+                    removeImage();
+                } catch (error) {
+                    console.error('Error clearing session:', error);
+                }
             }
+        }
+
+        // Auto-resize textarea
+        const textarea = document.getElementById('messageInput');
+        textarea.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 150) + 'px';
         });
     </script>
 </body>
@@ -324,29 +494,68 @@ HTML_TEMPLATE = '''
 def home():
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/generate', methods=['POST'])
-def generate():
+@app.route('/init-session', methods=['POST'])
+def init_session():
+    """Initialize a new conversation session"""
+    session_id = str(uuid.uuid4())
+    
+    # Initialize both text and vision models with chat
+    text_model = genai.GenerativeModel('gemini-2.5-flash')
+    vision_model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    
+    conversations[session_id] = {
+        'text_chat': text_model.start_chat(history=[]),
+        'vision_model': vision_model,
+        'history': []
+    }
+    
+    return jsonify({'session_id': session_id})
+
+@app.route('/chat', methods=['POST'])
+def chat():
     try:
-        prompt = request.form.get('prompt', '')
+        message = request.form.get('message', '')
+        session_id = request.form.get('session_id', '')
         
-        if not prompt:
-            return jsonify({'error': 'No prompt provided'}), 400
+        if not message:
+            return jsonify({'error': 'No message provided'}), 400
+        
+        if not session_id or session_id not in conversations:
+            return jsonify({'error': 'Invalid session'}), 400
+        
+        conversation = conversations[session_id]
         
         # Check if an image was uploaded
         if 'image' in request.files and request.files['image'].filename != '':
             image_file = request.files['image']
-            
-            # Read and process the image
             img = Image.open(io.BytesIO(image_file.read()))
             
+            # For vision requests, we need to include context from history
+            context = ""
+            if conversation['history']:
+                context = "Previous conversation:\n"
+                for item in conversation['history'][-5:]:  # Last 5 exchanges
+                    context += f"User: {item['user']}\nAssistant: {item['assistant']}\n\n"
+                context += f"Current question: {message}"
+            else:
+                context = message
+            
             # Generate response with vision model
-            response = vision_model.generate_content([prompt, img])
+            response = conversation['vision_model'].generate_content([context, img])
+            response_text = response.text
         else:
-            # Generate response with text-only model
-            response = text_model.generate_content(prompt)
+            # Use the chat session for text-only
+            response = conversation['text_chat'].send_message(message)
+            response_text = response.text
+        
+        # Save to history
+        conversation['history'].append({
+            'user': message,
+            'assistant': response_text
+        })
         
         return jsonify({
-            'response': response.text,
+            'response': response_text,
             'success': True
         })
     
@@ -356,32 +565,27 @@ def generate():
             'success': False
         }), 500
 
-@app.route('/chat', methods=['POST'])
-def chat():
-    """Alternative endpoint for chat-style conversations"""
+@app.route('/clear-session', methods=['POST'])
+def clear_session():
     try:
         data = request.get_json()
-        messages = data.get('messages', [])
+        session_id = data.get('session_id', '')
         
-        if not messages:
-            return jsonify({'error': 'No messages provided'}), 400
+        if session_id in conversations:
+            # Reinitialize the session
+            text_model = genai.GenerativeModel('gemini-pro')
+            vision_model = genai.GenerativeModel('gemini-pro-vision')
+            
+            conversations[session_id] = {
+                'text_chat': text_model.start_chat(history=[]),
+                'vision_model': vision_model,
+                'history': []
+            }
         
-        # Start a chat session
-        chat = text_model.start_chat(history=[])
-        
-        # Send the last message
-        response = chat.send_message(messages[-1])
-        
-        return jsonify({
-            'response': response.text,
-            'success': True
-        })
+        return jsonify({'success': True})
     
     except Exception as e:
-        return jsonify({
-            'error': str(e),
-            'success': False
-        }), 500
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

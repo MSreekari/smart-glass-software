@@ -2,15 +2,19 @@ from flask import Flask, request, jsonify, render_template_string
 import google.generativeai as genai
 import os
 import uuid
+import base64
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "your-secret-key-here-change-in-production")
 
+# Configure Gemini API
 GEMINI_API_KEY = "AIzaSyAbUKgJFbQHKM1O_4x7jm_kWy-b_a3wrNw"
 genai.configure(api_key=GEMINI_API_KEY)
 
+# Store conversation sessions
 conversations = {}
 
+# --- Prompt Builder ---
 def build_prompt(user_message, history=None, mode="text"):
     history_text = ""
     if history:
@@ -106,6 +110,12 @@ def chat():
         convo = conversations[session_id]
         mode = "vision" if image else "text"
         prompt = build_prompt(user_message, convo['history'], mode)
+
+        # If image uploaded, encode it and append to prompt
+        if image:
+            image_bytes = image.read()
+            image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+            prompt += f"\n[User uploaded an image: data:image/png;base64,{image_base64}]"
 
         # Send to Gemini
         response = convo["text_chat"].send_message(prompt)

@@ -1,0 +1,2 @@
+** Python libraries for detecting audio from inmp441 and converting it to text **: 
+sudo apt install python3-pyaudio python3-numpy
